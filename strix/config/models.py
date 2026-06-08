@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from agents import set_default_openai_api, set_default_openai_key
+from agents import set_default_openai_api, set_default_openai_key, set_tracing_disabled
+from agents.models.multi_provider import MultiProvider
 from agents.retry import (
     ModelRetryBackoffSettings,
     ModelRetrySettings,
@@ -14,10 +15,31 @@ from agents.retry import (
 
 
 if TYPE_CHECKING:
+    from agents.models.interface import ModelProvider
+
     from strix.config.settings import Settings
 
 
-_SDK_PREFIXES = {"any-llm", "litellm", "openai"}
+class StrixProvider(MultiProvider):
+    """Route any non-OpenAI prefix through LiteLLM with the prefix preserved,
+    so users type ``deepseek/deepseek-chat`` rather than
+    ``litellm/deepseek/deepseek-chat``.
+    """
+
+    def _resolve_prefixed_model(
+        self,
+        *,
+        original_model_name: str,
+        prefix: str,
+        stripped_model_name: str | None,
+    ) -> tuple[ModelProvider, str | None]:
+        if prefix in {"openai", "litellm", "any-llm"}:
+            return super()._resolve_prefixed_model(
+                original_model_name=original_model_name,
+                prefix=prefix,
+                stripped_model_name=stripped_model_name,
+            )
+        return self._get_fallback_provider("litellm"), original_model_name
 
 
 DEFAULT_MODEL_RETRY = ModelRetrySettings(
@@ -37,17 +59,14 @@ DEFAULT_MODEL_RETRY = ModelRetrySettings(
 
 
 def configure_sdk_model_defaults(settings: Settings) -> None:
-    """Apply Strix config to SDK-native defaults.
-
-    OpenAI-compatible base URLs are handled by the SDK OpenAI provider.
-    Non-OpenAI providers should use the SDK's native ``litellm/`` or
-    ``any-llm/`` routing, produced by :func:`normalize_model_name`.
-    """
+    """Apply Strix config to SDK-native defaults."""
     llm = settings.llm
+    set_tracing_disabled(True)
     _configure_litellm_compatibility()
     if llm.api_key:
         set_default_openai_key(llm.api_key, use_for_tracing=False)
         _configure_litellm_default("api_key", llm.api_key)
+        _mirror_api_key_to_provider_env(llm.model, llm.api_key)
     if llm.api_base:
         os.environ["OPENAI_BASE_URL"] = llm.api_base
         _configure_litellm_default("api_base", llm.api_base)
@@ -56,12 +75,34 @@ def configure_sdk_model_defaults(settings: Settings) -> None:
         set_default_openai_api("responses")
 
 
+def _mirror_api_key_to_provider_env(model_name: str | None, api_key: str) -> None:
+    if not model_name:
+        return
+    import litellm
+
+    name = model_name.strip()
+    for prefix in ("litellm/", "any-llm/"):
+        if name.lower().startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    try:
+        report = litellm.validate_environment(model=name.lower())
+    except Exception:  # noqa: BLE001
+        return
+    for env_key in report.get("missing_keys") or []:
+        if env_key.endswith("_API_KEY"):
+            os.environ.setdefault(env_key, api_key)
+
+
 def _configure_litellm_compatibility() -> None:
-    """Enable LiteLLM's permissive param-handling mode."""
+    """Enable LiteLLM's permissive param handling and disable its callbacks."""
     import litellm
 
     litellm.drop_params = True
     litellm.modify_params = True
+    litellm.turn_off_message_logging = True
+    litellm.disable_streaming_logging = True
+    litellm.suppress_debug_info = True
 
 
 def _configure_litellm_default(name: str, value: str) -> None:
@@ -71,30 +112,29 @@ def _configure_litellm_default(name: str, value: str) -> None:
     setattr(litellm, name, value)
 
 
-def normalize_model_name(model_name: str) -> str:
-    """Normalize friendly Strix model names to SDK-native model ids."""
-    model = model_name.strip()
-    if not model:
-        return model
-
-    if "/" in model:
-        prefix = model.split("/", 1)[0].lower()
-        if prefix in _SDK_PREFIXES:
-            return model
-        return f"litellm/{model}"
-
-    lower = model.lower()
-    if lower.startswith("claude"):
-        return f"litellm/anthropic/{model}"
-    if lower.startswith("gemini"):
-        return f"litellm/gemini/{model}"
-
-    return model
-
-
 def uses_chat_completions_tool_schema(model_name: str, settings: Settings) -> bool:
     """Return whether the resolved SDK route can only receive JSON function tools."""
     model = model_name.strip().lower()
-    if model.startswith(("litellm/", "any-llm/")):
+    if "/" in model and not model.startswith("openai/"):
         return True
-    return bool(settings.llm.api_base)
+    if settings.llm.api_base:
+        return True
+    return not _supports_responses_custom_tools(model_name)
+
+
+def _supports_responses_custom_tools(model_name: str) -> bool:
+    import litellm
+
+    name = model_name.strip().lower().removeprefix("openai/")
+    entry = litellm.model_cost.get(name) or {}
+    return bool(entry.get("supports_reasoning"))
+
+
+def is_known_openai_bare_model(model_name: str) -> bool:
+    import litellm
+
+    name = model_name.strip().lower()
+    if not name or "/" in name:
+        return False
+    entry = litellm.model_cost.get(name)
+    return bool(entry and entry.get("litellm_provider") == "openai")
