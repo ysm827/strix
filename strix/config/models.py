@@ -104,6 +104,22 @@ def _configure_litellm_compatibility() -> None:
     litellm.disable_streaming_logging = True
     litellm.suppress_debug_info = True
 
+    _register_litellm_cost_callback()
+
+
+def _register_litellm_cost_callback() -> None:
+    import litellm
+
+    from strix.report.state import litellm_cost_callback
+
+    for bucket_name in ("success_callback", "_async_success_callback"):
+        bucket = getattr(litellm, bucket_name, None)
+        if not isinstance(bucket, list):
+            continue
+        if litellm_cost_callback in bucket:
+            continue
+        bucket.append(litellm_cost_callback)
+
 
 def _configure_litellm_default(name: str, value: str) -> None:
     """Set LiteLLM's module-level defaults without adding a provider wrapper."""
@@ -119,15 +135,21 @@ def uses_chat_completions_tool_schema(model_name: str, settings: Settings) -> bo
         return True
     if settings.llm.api_base:
         return True
-    return not _supports_responses_custom_tools(model_name)
+    return not model_supports_reasoning(model_name)
 
 
-def _supports_responses_custom_tools(model_name: str) -> bool:
+def model_supports_reasoning(model_name: str) -> bool:
     import litellm
 
-    name = model_name.strip().lower().removeprefix("openai/")
-    entry = litellm.model_cost.get(name) or {}
-    return bool(entry.get("supports_reasoning"))
+    name = model_name.strip().lower()
+    for prefix in ("litellm/", "any-llm/", "openai/"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    entry = litellm.model_cost.get(name)
+    if entry is None and "/" in name:
+        entry = litellm.model_cost.get(name.rsplit("/", 1)[1])
+    return bool(entry and entry.get("supports_reasoning"))
 
 
 def is_known_openai_bare_model(model_name: str) -> bool:
