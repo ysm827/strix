@@ -10,6 +10,7 @@ from agents.models.multi_provider import MultiProvider
 from agents.retry import (
     ModelRetryBackoffSettings,
     ModelRetrySettings,
+    RetryPolicyContext,
     retry_policies,
 )
 
@@ -18,6 +19,21 @@ if TYPE_CHECKING:
     from agents.models.interface import ModelProvider
 
     from strix.config.settings import Settings
+
+
+def request_timeout_extra_args(timeout_s: float | None) -> dict[str, float] | None:
+    """Per-request model timeout; a plain float so ``ModelSettings.to_json_dict()`` stays serializable."""  # noqa: E501
+    if not timeout_s or timeout_s <= 0:
+        return None
+    return {"timeout": timeout_s}
+
+
+def _retry_statusless_provider_errors(context: RetryPolicyContext) -> bool:
+    """Retry statusless provider errors (e.g. mid-stream quota/billing), but not aborts."""
+    normalized = context.normalized
+    if normalized.is_abort:
+        return False
+    return normalized.status_code is None
 
 
 class StrixProvider(MultiProvider):
@@ -56,6 +72,7 @@ DEFAULT_MODEL_RETRY = ModelRetrySettings(
         retry_policies.provider_suggested(),
         retry_policies.network_error(),
         retry_policies.http_status((429, 500, 502, 503, 504)),
+        _retry_statusless_provider_errors,
     ),
 )
 
