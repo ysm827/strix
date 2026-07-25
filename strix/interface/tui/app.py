@@ -802,6 +802,7 @@ class StrixTUIApp(App):  # type: ignore[misc]
         self._scan_stop_event = threading.Event()
         self._scan_completed = threading.Event()
         self._scan_error: BaseException | None = None
+        self._error_noted_agents: set[str] = set()
 
         self._spinner_frame_index: int = 0
         self._sweep_num_squares: int = 6
@@ -1015,22 +1016,32 @@ class StrixTUIApp(App):  # type: ignore[misc]
             else:
                 self._agent_graph_sync_future = None
                 try:
-                    parent_of, statuses, names = future.result()
+                    parent_of, statuses, names, errors = future.result()
                 except Exception:
                     logger.exception("TUI agent graph sync failed")
                 else:
                     for agent_id, status in statuses.items():
+                        error = errors.get(agent_id)
                         self.live_view.upsert_agent(
                             agent_id,
                             name=names.get(agent_id, agent_id),
                             parent_id=parent_of.get(agent_id),
                             status=status,
+                            error_message=error,
                         )
+                        if status in {"failed", "crashed"} and error:
+                            if agent_id not in self._error_noted_agents:
+                                self._error_noted_agents.add(agent_id)
+                                self.live_view.record_agent_error(agent_id, error)
+                        else:
+                            self._error_noted_agents.discard(agent_id)
 
         if self._scan_loop is None or self._scan_loop.is_closed():
             return
 
-        async def collect() -> tuple[dict[str, str | None], dict[str, Any], dict[str, str]]:
+        async def collect() -> tuple[
+            dict[str, str | None], dict[str, Any], dict[str, str], dict[str, str]
+        ]:
             return await self.coordinator.graph_snapshot()
 
         self._agent_graph_sync_future = asyncio.run_coroutine_threadsafe(collect(), self._scan_loop)
@@ -1049,6 +1060,7 @@ class StrixTUIApp(App):  # type: ignore[misc]
                 "waiting": "⏸",
                 "completed": "🟢",
                 "failed": "🔴",
+                "crashed": "🔴",
                 "stopped": "■",
             }
 
@@ -1234,13 +1246,12 @@ class StrixTUIApp(App):  # type: ignore[misc]
             text.append(msg)
             return (text, Text(), False)
 
-        if status == "failed":
+        if status in {"failed", "crashed"}:
             error_msg = agent_data.get("error_message", "")
             text = Text()
-            if error_msg:
-                text.append(error_msg, style="red")
-            else:
-                text.append("Scan failed", style="red")
+            text.append(error_msg or "Agent failed", style="red")
+            text.append(" · ", style="dim")
+            text.append("Send message to resume", style="dim")
             self._stop_dot_animation()
             return (text, Text(), False)
 
@@ -1539,6 +1550,7 @@ class StrixTUIApp(App):  # type: ignore[misc]
             "waiting": "⏸",
             "completed": "🟢",
             "failed": "🔴",
+            "crashed": "🔴",
             "stopped": "■",
         }
 
@@ -1584,6 +1596,7 @@ class StrixTUIApp(App):  # type: ignore[misc]
             "waiting": "⏸",
             "completed": "🟢",
             "failed": "🔴",
+            "crashed": "🔴",
             "stopped": "■",
         }
 
