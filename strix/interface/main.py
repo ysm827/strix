@@ -31,6 +31,7 @@ from strix.config.models import (
     is_known_openai_bare_model,
     is_recommended_or_frontier_model,
 )
+from strix.core.inputs import DEFAULT_MAX_TURNS
 from strix.core.paths import run_dir_for, runtime_state_dir
 from strix.interface.cli import run_cli
 from strix.interface.tui import run_tui
@@ -210,7 +211,7 @@ def validate_environment() -> None:
             padding=(1, 2),
         )
 
-        logger.error("Missing required env vars: %s", missing_required_vars)
+        logger.debug("Missing required env vars: %s", missing_required_vars)
         console.print("\n")
         console.print(panel)
         console.print()
@@ -223,7 +224,7 @@ def validate_environment() -> None:
 
 def check_docker_installed() -> None:
     if shutil.which("docker") is None:
-        logger.error("Docker CLI not found in PATH")
+        logger.debug("Docker CLI not found in PATH")
         console = Console()
         error_text = Text()
         error_text.append("DOCKER NOT INSTALLED", style="bold red")
@@ -422,7 +423,7 @@ async def warm_up_llm(show_model_warning: bool = True) -> None:
             logger.info("LLM warm-up succeeded for dedupe model %s", dedupe_model)
 
     except Exception as e:
-        logger.exception("LLM warm-up failed")
+        logger.debug("LLM warm-up failed", exc_info=True)
         error_text = Text()
         sub_hint = _subscription_error_hint(e)
         if sub_hint is not None:
@@ -479,6 +480,16 @@ def _positive_budget(value: str) -> float:
     if not math.isfinite(budget) or budget <= 0:
         raise argparse.ArgumentTypeError("must be a finite number greater than 0")
     return budget
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be an integer greater than 0")
+    return parsed
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -636,10 +647,27 @@ Examples:
     )
 
     parser.add_argument(
-        "--max-budget-usd",
+        "--max-budget",
+        dest="max_budget_usd",
+        metavar="USD",
         type=_positive_budget,
         default=None,
-        help="Maximum LLM cost in USD (> 0). The scan stops cleanly when this limit is reached.",
+        help=(
+            "Maximum LLM cost in USD (> 0). The scan stops cleanly when this limit is reached. "
+            "Graduated wrap-up warnings are sent to all agents as it is approached."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-turns",
+        dest="max_turns",
+        metavar="N",
+        type=_positive_int,
+        default=DEFAULT_MAX_TURNS,
+        help=(
+            "Maximum turns per agent (> 0, default %(default)s). Each agent is force-stopped "
+            "when it reaches this limit, with graduated wrap-up warnings as it is approached."
+        ),
     )
 
     parser.add_argument(
@@ -856,7 +884,7 @@ def display_completion_message(args: argparse.Namespace, results_path: Path) -> 
     view_text = Text()
     view_text.append("\n")
     view_text.append("View", style="dim")
-    view_text.append("         ")
+    view_text.append("    ")
     view_text.append(f"strix view {args.run_name}", style="#22c55e")
     panel_parts.extend(["\n", view_text])
 
@@ -918,7 +946,7 @@ def pull_docker_image() -> None:
                 last_update = process_pull_line(line, layers_info, status, last_update)
 
         except DockerException as e:
-            logger.exception("Failed to pull docker image %s", image)
+            logger.debug("Failed to pull docker image %s", image, exc_info=True)
             console.print()
             error_text = Text()
             error_text.append("FAILED TO PULL IMAGE", style="bold red")
@@ -952,7 +980,7 @@ def main() -> None:
     # `strix view [<run>]` is a viewer-only subcommand, dispatched before the
     # scan argument parser (which requires a target) and before any scan setup.
     if len(sys.argv) > 1 and sys.argv[1] == "view":
-        from strix.viewer.cli import run_view
+        from strix.interface.viewer.cli import run_view
 
         run_view(sys.argv[2:])
         return
