@@ -23,6 +23,7 @@ from strix.config.models import (
     configure_sdk_model_defaults,
     uses_chat_completions_tool_schema,
 )
+from strix.config.settings import DEFAULT_MAX_TURNS
 from strix.core.agents import AgentCoordinator
 from strix.core.execution import (
     respawn_subagents,
@@ -33,7 +34,6 @@ from strix.core.execution import (
 )
 from strix.core.hooks import BudgetExceededError, ReportUsageHooks, recomputed_budget_flags
 from strix.core.inputs import (
-    DEFAULT_MAX_TURNS,
     build_root_task,
     build_scope_context,
     make_model_settings,
@@ -377,12 +377,6 @@ async def run_strix_scan(
 
         async with coordinator._lock:
             root_status = coordinator.statuses.get(root_id)
-            root_error = coordinator.errors.get(root_id)
-
-        root_recoverable_park = root_status == "waiting" and bool(root_error)
-        root_start_parked = bool(
-            interactive and is_resume and root_status != "running" and not root_recoverable_park
-        )
 
         result = await run_agent_loop(
             agent=root_agent,
@@ -394,7 +388,7 @@ async def run_strix_scan(
             agent_id=root_id,
             interactive=interactive,
             session=root_session,
-            start_parked=root_start_parked,
+            start_parked=bool(interactive and is_resume and root_status != "running"),
             event_sink=event_sink,
             hooks=hooks,
         )

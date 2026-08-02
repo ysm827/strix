@@ -8,7 +8,9 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+DEFAULT_MAX_TURNS = 500
 
 _BASE_CONFIG = SettingsConfigDict(
     case_sensitive=False,
