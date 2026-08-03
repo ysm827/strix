@@ -13,6 +13,7 @@ from typing import Any, Literal, get_args
 from agents import RunContextWrapper, function_tool
 
 from strix.core.agents import Status, coordinator_from_context
+from strix.core.execution import notify_parent_on_terminal
 from strix.skills import validate_requested_skills
 
 
@@ -558,7 +559,7 @@ async def agent_finish(
         )
 
     parent_notified = False
-    if report_to_parent:
+    if report_to_parent and await coordinator.claim_parent_notice(me):
         async with coordinator._lock:
             agent_name = coordinator.names.get(me, me)
         report = _render_completion_report(
@@ -582,6 +583,11 @@ async def agent_finish(
         )
         parent_notified = True
 
+    await coordinator.set_status(me, "completed")
+    if not parent_notified:
+        # Silence here would leave a parent waiting on a report that is never coming.
+        await notify_parent_on_terminal(coordinator, me, "completed")
+
     logger.info(
         "agent_finish: %s success=%s findings=%d parent_notified=%s",
         me,
@@ -589,7 +595,6 @@ async def agent_finish(
         len(findings or []),
         parent_notified,
     )
-    await coordinator.set_status(me, "completed")
 
     return json.dumps(
         {
@@ -680,9 +685,16 @@ async def stop_agent(
         )
 
     if cascade:
-        await coordinator.cancel_descendants_graceful(target_agent_id)
+        stopped = await coordinator.cancel_descendants_graceful(target_agent_id)
     else:
         await coordinator.request_stop(target_agent_id)
+        stopped = [target_agent_id]
+
+    # The stopper knows what it just did; anyone else waiting on those agents does not.
+    async with coordinator._lock:
+        orphaned = [aid for aid in stopped if coordinator.parent_of.get(aid) not in (None, me)]
+    for aid in orphaned:
+        await notify_parent_on_terminal(coordinator, aid, "stopped")
 
     logger.info(
         "stop_agent: target=%s cascade=%s reason=%r",
