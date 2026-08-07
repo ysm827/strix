@@ -108,6 +108,18 @@ Try the Strix full-stack penetration testing platform at **[app.strix.ai](https:
 
 ---
 
+## 🤖 Use Strix from Your Coding Agent
+
+Strix is agent-ready. Give Claude Code, Cursor, Codex, or any [SKILL.md-compatible](https://agentskills.io) agent the ability to run pentests, fix findings, and set up CI scanning:
+
+```bash
+npx skills add usestrix/strix
+```
+
+This installs four skills: **strix-pentest** (run headless scans and read results), **strix-cloud-api** (drive the managed [app.strix.ai](https://app.strix.ai) platform via REST — no local Docker or LLM key), **strix-fix-findings** (remediate + re-scan to verify), and **strix-ci-setup** (PR scanning in CI). Agents can run Strix two ways with the same engine — the open-source CLI locally, or the managed cloud when there's no local infra — and read [`AGENTS.md`](AGENTS.md) for a quick reference, [docs.strix.ai/llms.txt](https://docs.strix.ai/llms.txt) for the CLI docs, and [docs.app.strix.ai](https://docs.app.strix.ai) for the API.
+
+---
+
 ## ✨ Features
 
 ### Agentic Pentesting Tools
@@ -337,6 +349,7 @@ Strix builds on the incredible work of open-source projects like [LiteLLM](https
 
 
 > [!WARNING]
-> Only test apps you own or have permission to test. You are responsible for using Strix ethically and legally.
+> **Authorized use only.** Strix actively tests the targets you point it at, so only run it against systems you own or have **explicit, written permission** to test, and stay within the agreed scope. Unauthorized testing is illegal in most jurisdictions.
+> You alone are responsible for obtaining authorization and complying with the law. Strix is provided "as is" with no warranty or liability for misuse.
 
 </div>
