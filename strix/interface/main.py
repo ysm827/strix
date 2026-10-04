@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import sys
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -15,7 +16,7 @@ from rich.text import Text
 
 from strix.config import codex, load_settings, persist_current
 from strix.core.paths import run_dir_for
-from strix.interface.cli_args import parse_arguments
+from strix.interface.cli_args import FAIL_ON_SEVERITIES, parse_arguments
 from strix.interface.environment import (
     check_docker_installed,
     pull_docker_image,
@@ -43,7 +44,7 @@ from strix.interface.utils import (
 )
 from strix.llm.warmup import start_import_warmup, wait_for_import_warmup
 from strix.telemetry import posthog, report_error, scarf, set_scan_phase
-from strix.telemetry.logging import configure_dependency_logging
+from strix.telemetry.logging import setup_console_logging
 
 
 BEDROCK_MODEL_PREFIX = "bedrock/"
@@ -315,6 +316,30 @@ def display_completion_message(args: argparse.Namespace, results_path: Path) -> 
         notify_update(console)
 
 
+def findings_fail_build(reports: list[dict[str, Any]], fail_on: str | None) -> bool:
+    """Whether headless findings should exit 2 under the ``--fail-on`` threshold.
+
+    With no threshold any finding fails. Otherwise a finding fails when its
+    severity is at or above the threshold. A severity outside the known scale
+    fails too, so a gate never passes on a value it cannot rank. ``none`` is a
+    known level below ``info`` and only fails without a threshold.
+    """
+    if not reports:
+        return False
+    if fail_on is None:
+        return True
+    threshold = FAIL_ON_SEVERITIES.index(fail_on)
+    for report in reports:
+        severity = str(report.get("severity") or "").strip().lower()
+        if severity == "none":
+            continue
+        if severity not in FAIL_ON_SEVERITIES:
+            return True
+        if FAIL_ON_SEVERITIES.index(severity) <= threshold:
+            return True
+    return False
+
+
 def _print_error_panel(title: str, message: str) -> None:
     console = Console()
     error_text = Text()
@@ -367,11 +392,10 @@ def _print_model_connection_error(exc: BaseException, model_name: str) -> None:
 
 
 def _bootstrap_scan(args: argparse.Namespace) -> None:
-    """Warm up the model and prepare the run for a non-interactive scan.
+    """Warm up the model and prepare the run before the interface starts.
 
-    Interactive launches skip this: the model preflight and run preparation
-    happen inside the TUI so the interface paints immediately instead of
-    waiting on a model round trip.
+    Start-screen launches skip this: they verify the model and prepare the
+    run once the user has entered a target.
     """
     set_scan_phase("preflight")
     try:
@@ -390,11 +414,21 @@ def _bootstrap_scan(args: argparse.Namespace) -> None:
     telemetry_start(args)
 
 
-def main() -> None:
-    configure_dependency_logging()
+def _force_utf8_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        with contextlib.suppress(ValueError, OSError):
+            reconfigure(encoding="utf-8")
 
+
+def main() -> None:
     if sys.platform == "win32":
+        _force_utf8_streams()
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    setup_console_logging()
 
     if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
         try:
@@ -448,7 +482,7 @@ def main() -> None:
     # Everything below imports the scan engine; do not race the warm-up thread.
     wait_for_import_warmup()
 
-    if args.non_interactive:
+    if args.non_interactive or not args.needs_setup:
         _bootstrap_scan(args)
 
     from strix.report.state import get_global_report_state
@@ -501,7 +535,7 @@ def main() -> None:
 
     if args.non_interactive:
         report_state = get_global_report_state()
-        if report_state and report_state.vulnerability_reports:
+        if report_state and findings_fail_build(report_state.vulnerability_reports, args.fail_on):
             sys.exit(2)
 
 

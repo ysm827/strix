@@ -20,6 +20,10 @@ from strix.interface.utils import (
 )
 
 
+# Severities ``--fail-on`` accepts, most severe first.
+FAIL_ON_SEVERITIES = ("critical", "high", "medium", "low", "info")
+
+
 def get_version() -> str:
     try:
         from importlib.metadata import version
@@ -187,6 +191,21 @@ Strix Cloud:
     )
 
     parser.add_argument(
+        "--fail-on",
+        dest="fail_on",
+        type=str.lower,
+        choices=FAIL_ON_SEVERITIES,
+        default=None,
+        metavar="SEVERITY",
+        help=(
+            "Headless mode only: exit 2 only when a finding is at or above this severity "
+            "(critical, high, medium, low, info). Lower findings are still written to every "
+            "report artifact. A finding with an unrecognized severity always counts. "
+            "Default: any finding exits 2."
+        ),
+    )
+
+    parser.add_argument(
         "-m",
         "--scan-mode",
         type=str,
@@ -317,6 +336,9 @@ Strix Cloud:
 
     if args.update:
         sys.exit(0 if self_update() else 1)
+
+    if args.fail_on and not args.non_interactive:
+        parser.error("--fail-on only applies to headless runs; add -n/--non-interactive.")
 
     if args.instruction and args.instruction_file:
         parser.error(

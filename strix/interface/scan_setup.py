@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +59,45 @@ class ModelConnectionError(RuntimeError):
         self.model_name = model_name
 
 
+def _first_non_ascii(value: str) -> tuple[int, str] | None:
+    for position, char in enumerate(value):
+        if ord(char) > 0x7F:
+            return position, char
+    return None
+
+
+def _header_candidates(
+    prefix: str, model: str | None, api_key: str | None, extra_headers: dict[str, str] | None
+) -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
+    if api_key and not codex.subscription_model(model):
+        candidates.append((f"{prefix}LLM_API_KEY", api_key))
+    for header, value in (extra_headers or {}).items():
+        candidates.append((f"{prefix}LLM_EXTRA_HEADERS header name {header!r}", header))
+        candidates.append((f"{prefix}LLM_EXTRA_HEADERS value for {header!r}", value))
+    return candidates
+
+
+def check_header_safe_credentials(settings: Settings) -> None:
+    llm = settings.llm
+    dedupe = settings.dedupe
+    candidates = _header_candidates("", llm.model, llm.api_key, llm.extra_headers)
+    if dedupe.model:
+        candidates += _header_candidates(
+            "DEDUPE_", dedupe.model, (dedupe.api_key or "").strip(), dedupe.extra_headers
+        )
+    for setting, value in candidates:
+        found = _first_non_ascii(value)
+        if found is None:
+            continue
+        position, char = found
+        raise ValueError(
+            f"{setting} contains a character that cannot be sent in an HTTP header: "
+            f"U+{ord(char):04X} ({unicodedata.name(char, 'unnamed character')}) "
+            f"at position {position + 1} of {len(value)}. Re-enter the value without it."
+        )
+
+
 async def preflight_model_connection(
     model_name: str,
     *,
@@ -70,6 +110,7 @@ async def preflight_model_connection(
     from strix.core.inputs import make_model_settings
 
     resolved_settings = load_settings() if settings is None else settings
+    check_header_safe_credentials(resolved_settings)
     configure_sdk_model_defaults(resolved_settings)
     model = StrixProvider().get_model(model_name)
     request_settings = make_model_settings(
