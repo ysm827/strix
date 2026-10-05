@@ -88,31 +88,18 @@ def configure_dependency_logging() -> None:
     logging.getLogger("asyncio").setLevel(logging.CRITICAL)
     logging.getLogger("asyncio").propagate = False
     warnings.filterwarnings("ignore", category=RuntimeWarning, module="asyncio")
-    _silence_urllib3_finalizer_noise()
+    _route_unraisable_to_log()
 
 
-_unraisable_hook_installed = False
-
-
-def _is_urllib3_closed_file_noise(unraisable: sys.UnraisableHookArgs) -> bool:
-    return (
-        isinstance(unraisable.exc_value, ValueError)
-        and "I/O operation on closed file" in str(unraisable.exc_value)
-        and type(unraisable.object).__module__.split(".")[0] == "urllib3"
-    )
-
-
-def _silence_urllib3_finalizer_noise() -> None:
-    global _unraisable_hook_installed  # noqa: PLW0603
-    if _unraisable_hook_installed:
-        return
-    _unraisable_hook_installed = True
-    previous = sys.unraisablehook
-
-    def hook(unraisable: sys.UnraisableHookArgs) -> None:
-        if _is_urllib3_closed_file_noise(unraisable):
-            return
-        previous(unraisable)
+def _route_unraisable_to_log() -> None:
+    def hook(u: sys.UnraisableHookArgs) -> None:
+        with contextlib.suppress(BaseException):
+            logger = logging.getLogger("strix.telemetry")
+            if logger.hasHandlers():
+                logger.warning(
+                    u.err_msg or f"Exception ignored in {u.object!r}",
+                    exc_info=(u.exc_type, u.exc_value, u.exc_traceback),  # type: ignore[arg-type]
+                )
 
     sys.unraisablehook = hook
 
